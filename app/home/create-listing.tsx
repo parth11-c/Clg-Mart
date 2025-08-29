@@ -64,101 +64,47 @@ export default function CreateListing() {
       try {
         console.log('Processing image:', imageUri);
         
-        // Convert URI → Blob (this is the key fix!)
+        // Convert URI → Blob and ensure it's a JPEG
         const response = await fetch(imageUri);
         const blob = await response.blob();
         
-        console.log('Blob created, size:', blob.size);
+        // Create unique filename
+        const fileName = `${listingId}/${Date.now()}_${i}.jpg`;
         
-        // Get file extension and create unique filename
-        const ext = imageUri.split('.').pop() || 'jpg';
-        const fileName = `${listingId}/${Date.now()}_${i}.${ext}`;
-        
-        // Upload to Supabase storage with proper content type
-        const { data, error: uploadError } = await supabase.storage
+        // Upload to Supabase storage
+        const { error: uploadError } = await supabase.storage
           .from('listing-images')
           .upload(fileName, blob, {
-            contentType: `image/${ext}`,
-            upsert: true, // overwrite if exists
+            contentType: 'image/jpeg',
+            upsert: false
           });
         
         if (uploadError) {
           console.error('Storage upload error:', uploadError);
-          
-          // If bucket doesn't exist, try to create it or use a different approach
-          if (uploadError.message.includes('bucket') || uploadError.message.includes('not found')) {
-            console.log('Storage bucket not found, trying alternative approach...');
-            
-            // Try to upload to a different bucket
-            try {
-              const { data: altData, error: altUploadError } = await supabase.storage
-                .from('avatars')
-                .upload(fileName, blob, {
-                  contentType: `image/${ext}`,
-                  upsert: true,
-                });
-              
-              if (altUploadError) {
-                console.log('Alternative bucket also failed, using base64 fallback');
-                // Fallback to base64 storage as last resort
-                const base64 = await new Promise<string>((resolve) => {
-                  const reader = new FileReader();
-                  reader.onloadend = () => resolve(reader.result as string);
-                  reader.readAsDataURL(blob);
-                });
-                
-                // Save base64 to listing_images table
-                const { error: insertError } = await supabase.from('listing_images').insert([
-                  { listing_id: listingId, file_path: base64 }
-                ]);
-                
-                if (insertError) {
-                  console.error('Error saving base64 image:', insertError);
-                } else {
-                  console.log('Base64 image saved successfully');
-                  uploadedUrls.push(base64);
-                }
-              } else {
-                // Alternative bucket upload successful
-                const { data: { publicUrl } } = supabase.storage
-                  .from('avatars')
-                  .getPublicUrl(fileName);
-                
-                // Save URL to listing_images table
-                const { error: insertError } = await supabase.from('listing_images').insert([
-                  { listing_id: listingId, file_path: publicUrl }
-                ]);
-                
-                if (insertError) {
-                  console.error('Error saving image URL:', insertError);
-                } else {
-                  console.log('Image URL saved successfully');
-                  uploadedUrls.push(publicUrl);
-                }
-              }
-            } catch (fallbackError) {
-              console.error('Fallback upload failed:', fallbackError);
-            }
-          }
+          continue; // Skip this image and try the next one
+        }
+        
+        // Get the public URL
+        const { data: { publicUrl } } = supabase.storage
+          .from('listing-images')
+          .getPublicUrl(fileName);
+        
+        console.log('Public URL generated:', publicUrl);
+        
+        // Save URL to listing_images table
+        const { error: insertError } = await supabase
+          .from('listing_images')
+          .insert({
+            listing_id: listingId,
+            file_path: publicUrl,
+            created_at: new Date().toISOString()
+          });
+        
+        if (insertError) {
+          console.error('Error saving image URL to database:', insertError);
         } else {
-          // Main storage upload successful
-          const { data: { publicUrl } } = supabase.storage
-            .from('listing-images')
-            .getPublicUrl(fileName);
-          
-          console.log('Image uploaded to storage successfully:', publicUrl);
-          
-          // Save URL to listing_images table
-          const { error: insertError } = await supabase.from('listing_images').insert([
-            { listing_id: listingId, file_path: publicUrl }
-          ]);
-          
-          if (insertError) {
-            console.error('Error saving image URL to database:', insertError);
-          } else {
-            console.log('Image URL saved to database successfully');
-            uploadedUrls.push(publicUrl);
-          }
+          console.log('Image URL saved to database successfully');
+          uploadedUrls.push(publicUrl);
         }
         
       } catch (error) {

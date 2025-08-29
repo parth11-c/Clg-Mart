@@ -77,7 +77,7 @@ export default function ProfileTab() {
       }
 
       const { data, error } = await supabase
-        .from('public_profiles')
+        .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single();

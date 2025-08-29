@@ -41,5 +41,6 @@ export default function SafeAreaWrapper({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#000000',
   },
 });

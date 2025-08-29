@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '../../lib/supabase';
+import { databaseSetup } from '../../lib/databaseSetup';
+import { fixListingImages } from '../../lib/databaseFixes';
 import ListingCard from '../../components/ListingCard';
 import SafeAreaWrapper from '../../components/SafeAreaWrapper';
 import { 
@@ -45,7 +47,7 @@ interface Listing {
     name: string;
   };
   listing_images?: {
-    url: string;
+    file_path: string;
   }[];
 }
 
@@ -57,11 +59,17 @@ export default function HomeTab() {
 
   useEffect(() => {
     checkUser();
-    fetchListings();
+    initializeApp();
     const cleanup = setupRealtimeSubscription();
     
     return cleanup;
   }, []);
+
+  const initializeApp = async () => {
+    // Initialize database if needed
+    await databaseSetup.initializeCategories();
+    await fetchListings();
+  };
 
   const checkUser = async () => {
     try {
@@ -88,19 +96,10 @@ export default function HomeTab() {
 
   const fetchListings = async () => {
     try {
-      // Try to fetch from listings table directly with images
+      // Simplified query to avoid foreign key issues
       const { data, error } = await supabase
         .from('listings')
-        .select(`
-          *,
-          seller:public_profiles!listings_seller_id_fkey (
-            username,
-            avatar_url
-          ),
-          category:categories (
-            name
-          )
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
       
       if (error) {
@@ -120,24 +119,56 @@ export default function HomeTab() {
       } else {
         console.log('Fetched listings:', data);
         
-        // Fetch images for each listing separately
+        // Fetch additional data for each listing
         const listingsWithImages = await Promise.all(
           (data || []).map(async (listing) => {
             try {
-              const { data: images } = await supabase
+              // Fetch images with better debugging
+              const { data: images, error: imgError } = await supabase
                 .from('listing_images')
                 .select('file_path')
                 .eq('listing_id', listing.id);
+
+              if (imgError) {
+                console.log('Image fetch error for listing', listing.id, ':', imgError);
+              }
+
+              console.log('Raw images data for listing', listing.id, ':', images);
+
+              // Filter out images with null/undefined file_path (same logic as browse page)
+              const validImages = images?.filter(img => img.file_path && img.file_path.trim() !== '') || [];
+
+              // Fetch seller info
+              const { data: seller } = await supabase
+                .from('profiles')
+                .select('username, avatar_url')
+                .eq('id', listing.seller_id)
+                .single();
+
+              // Fetch category info
+              const { data: category } = await supabase
+                .from('categories')
+                .select('name')
+                .eq('id', listing.category_id)
+                .single();
               
-              return {
+              const processedListing = {
                 ...listing,
-                listing_images: images?.map(img => ({ file_path: img.file_path })) || []
+                listing_images: validImages.map(img => ({ file_path: img.file_path })),
+                seller: seller || { username: 'Unknown User' },
+                category: category || { name: 'Unknown Category' }
               };
+
+              console.log('Processed listing:', processedListing.id, 'with', validImages.length, 'valid images');
+              
+              return processedListing;
             } catch (imageError) {
-              console.log('Error fetching images for listing:', listing.id, imageError);
+              console.log('Error fetching additional data for listing:', listing.id, imageError);
               return {
                 ...listing,
-                listing_images: []
+                listing_images: [],
+                seller: { username: 'Unknown User' },
+                category: { name: 'Unknown Category' }
               };
             }
           })
@@ -145,6 +176,24 @@ export default function HomeTab() {
         
         console.log('Listings with images:', listingsWithImages);
         setListings(listingsWithImages);
+        
+        // Check if any listings have invalid images and fix them (same logic as browse page)
+        const hasInvalidImages = listingsWithImages.some(listing => 
+          !listing.listing_images || 
+          listing.listing_images.length === 0 || 
+          listing.listing_images.some((img: { file_path: string }) => !img.file_path || img.file_path === 'undefined')
+        );
+
+        if (hasInvalidImages) {
+          console.log('Some listings have invalid images, fixing...');
+          const fixed = await fixListingImages();
+          if (fixed) {
+            // Refetch listings after fixing images
+            setTimeout(() => {
+              fetchListings();
+            }, 2000);
+          }
+        }
       }
     } catch (error) {
       console.error('Error fetching listings:', error);

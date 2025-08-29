@@ -14,6 +14,7 @@ import {
 import { Link, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { supabase } from '../lib/supabase';
+import { databaseSetup } from '../lib/databaseSetup';
 import SafeAreaWrapper from '../components/SafeAreaWrapper';
 import { 
   fontSizes, 
@@ -87,8 +88,10 @@ export default function AuthPage() {
             'Account created successfully! Please check your email to verify your account before signing in.',
             [{ text: 'OK', onPress: () => setIsSignUp(false) }]
           );
-        } else if (data?.session) {
+        } else if (data?.session && data?.user) {
           // User is automatically signed in
+          // Create user profile
+          await databaseSetup.createUserProfile(data.user.id, email);
           router.replace('/home');
         }
       } else {
@@ -102,7 +105,9 @@ export default function AuthPage() {
           throw error;
         }
         
-        if (data?.session) {
+        if (data?.session && data?.user) {
+          // Create user profile if it doesn't exist
+          await databaseSetup.createUserProfile(data.user.id, email);
           router.replace('/home');
         } else {
           throw new Error('No session created after sign in');

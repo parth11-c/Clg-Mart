@@ -2,93 +2,120 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
+  TextInput,
   StyleSheet,
   FlatList,
-  TextInput,
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Image,
   Alert,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../lib/supabase';
 
 interface Message {
   id: string;
   content: string;
-  sender_id: string;
   created_at: string;
-  sender: {
-    username: string;
-    avatar_url?: string;
-  };
+  sender_id: string;
+  sender_username: string;
+  sender_avatar_url?: string;
 }
 
-interface Conversation {
+interface ConversationDetails {
   id: string;
-  listing: {
-    title: string;
-    price: number;
-  };
-  other_user: {
-    username: string;
-    avatar_url?: string;
-  };
+  listing_id: string;
+  buyer_id: string;
+  seller_id: string;
+  buyer_username: string;
+  seller_username: string;
+  buyer_avatar_url?: string;
+  seller_avatar_url?: string;
+  listing_title: string;
+  listing_price: number;
 }
 
-export default function ChatScreen() {
+export default function MessageScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [conversation, setConversation] = useState<Conversation | null>(null);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [conversation, setConversation] = useState<ConversationDetails | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
-    fetchConversation();
+    fetchCurrentUser();
+    fetchConversationDetails();
     fetchMessages();
-    checkCurrentUser();
-    setupRealtimeSubscription();
+    const unsubscribe = setupRealtimeMessages();
+    return () => {
+      unsubscribe();
+    };
   }, [id]);
 
-  const fetchConversation = async () => {
+  const fetchCurrentUser = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      setCurrentUser(user);
+    } catch (error) {
+      console.error('Error fetching current user:', error);
+    }
+  };
+
+  const fetchConversationDetails = async () => {
     try {
       const { data, error } = await supabase
-        .from('conversations_with_details')
-        .select('*')
+        .from('conversations')
+        .select(`
+          *,
+          buyer:buyer_id (id, username, avatar_url),
+          seller:seller_id (id, username, avatar_url),
+          listing:listing_id (id, title, price)
+        `)
         .eq('id', id)
         .single();
 
-      if (error) {
-        console.error('Error fetching conversation:', error);
-        Alert.alert('Error', 'Failed to load conversation');
-        return;
-      }
+      if (error) throw error;
 
-      setConversation(data);
+      setConversation({
+        ...data,
+        buyer_username: data.buyer.username,
+        seller_username: data.seller.username,
+        buyer_avatar_url: data.buyer.avatar_url,
+        seller_avatar_url: data.seller.avatar_url,
+        listing_title: data.listing.title,
+        listing_price: data.listing.price,
+      });
     } catch (error) {
       console.error('Error fetching conversation:', error);
-      Alert.alert('Error', 'Failed to load conversation');
+      Alert.alert('Error', 'Could not load conversation details');
     }
   };
 
   const fetchMessages = async () => {
     try {
       const { data, error } = await supabase
-        .from('messages_with_sender')
-        .select('*')
+        .from('messages')
+        .select(`
+          *,
+          sender:sender_id (username, avatar_url)
+        `)
         .eq('conversation_id', id)
         .order('created_at', { ascending: true });
 
-      if (error) {
-        console.error('Error fetching messages:', error);
-      } else {
-        setMessages(data || []);
-      }
+      if (error) throw error;
+
+      setMessages(data.map(message => ({
+        ...message,
+        sender_username: message.sender.username,
+        sender_avatar_url: message.sender.avatar_url,
+      })));
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
@@ -96,45 +123,29 @@ export default function ChatScreen() {
     }
   };
 
-  const checkCurrentUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    setCurrentUser(user);
-  };
-
-  const setupRealtimeSubscription = () => {
-    const channel = supabase
-      .channel(`messages_${id}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: 'INSERT', 
-          schema: 'public', 
-          table: 'messages',
-          filter: `conversation_id=eq.${id}`
-        },
-        (payload) => {
-          // Add new message to the list
-          setMessages(prev => [...prev, payload.new as Message]);
-          
-          // Scroll to bottom
-          setTimeout(() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }, 100);
-        }
-      )
+  const setupRealtimeMessages = () => {
+    const subscription = supabase
+      .channel('messages_channel')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${id}`,
+      }, payload => {
+        fetchMessages(); // Refresh messages to get sender details
+      })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      subscription.unsubscribe();
     };
   };
 
   const sendMessage = async () => {
     if (!newMessage.trim() || !currentUser || !conversation) return;
 
-    setSending(true);
-
     try {
+      setSending(true);
       const { error } = await supabase
         .from('messages')
         .insert([
@@ -145,13 +156,9 @@ export default function ChatScreen() {
           }
         ]);
 
-      if (error) {
-        console.error('Error sending message:', error);
-        Alert.alert('Error', 'Failed to send message');
-        return;
-      }
-
+      if (error) throw error;
       setNewMessage('');
+      flatListRef.current?.scrollToEnd();
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'Failed to send message');
@@ -160,38 +167,40 @@ export default function ChatScreen() {
     }
   };
 
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
-  };
-
   const renderMessage = ({ item }: { item: Message }) => {
-    const isOwnMessage = item.sender_id === currentUser?.id;
+    const isCurrentUser = currentUser?.id === item.sender_id;
 
     return (
       <View style={[
         styles.messageContainer,
-        isOwnMessage ? styles.ownMessage : styles.otherMessage
+        isCurrentUser ? styles.currentUserMessage : styles.otherUserMessage
       ]}>
+        {!isCurrentUser && (
+          <View style={styles.avatarContainer}>
+            {item.sender_avatar_url ? (
+              <Image
+                source={{ uri: item.sender_avatar_url }}
+                style={styles.avatar}
+              />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Text style={styles.avatarText}>
+                  {item.sender_username?.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
         <View style={[
           styles.messageBubble,
-          isOwnMessage ? styles.ownBubble : styles.otherBubble
+          isCurrentUser ? styles.currentUserBubble : styles.otherUserBubble
         ]}>
-          <Text style={[
-            styles.messageText,
-            isOwnMessage ? styles.ownMessageText : styles.otherMessageText
-          ]}>
-            {item.content}
-          </Text>
-          <Text style={[
-            styles.messageTime,
-            isOwnMessage ? styles.ownMessageTime : styles.otherMessageTime
-          ]}>
-            {formatTime(item.created_at)}
+          <Text style={styles.messageText}>{item.content}</Text>
+          <Text style={styles.messageTime}>
+            {new Date(item.created_at).toLocaleTimeString([], { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            })}
           </Text>
         </View>
       </View>
@@ -202,18 +211,7 @@ export default function ChatScreen() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#ffffff" />
-        <Text style={styles.loadingText}>Loading conversation...</Text>
-      </View>
-    );
-  }
-
-  if (!conversation) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>Conversation not found</Text>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Text style={styles.backButtonText}>Go Back</Text>
-        </TouchableOpacity>
+        <Text style={styles.loadingText}>Loading messages...</Text>
       </View>
     );
   }
@@ -221,58 +219,61 @@ export default function ChatScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <StatusBar style="light" />
       
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Text style={styles.backButtonText}>←</Text>
-        </TouchableOpacity>
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{conversation.other_user.username}</Text>
-          <Text style={styles.headerSubtitle}>{conversation.listing.title}</Text>
+      {conversation && (
+        <View style={styles.header}>
+          <TouchableOpacity 
+            style={styles.backButton} 
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={24} color="#ffffff" />
+          </TouchableOpacity>
+          <View style={styles.headerContent}>
+            <Text style={styles.headerTitle}>
+              {currentUser?.id === conversation.buyer_id 
+                ? conversation.seller_username 
+                : conversation.buyer_username}
+            </Text>
+            <Text style={styles.listingTitle} numberOfLines={1}>
+              {conversation.listing_title} - ${conversation.listing_price.toFixed(2)}
+            </Text>
+          </View>
         </View>
-      </View>
+      )}
 
-      {/* Messages */}
       <FlatList
         ref={flatListRef}
         data={messages}
-        keyExtractor={(item) => item.id}
         renderItem={renderMessage}
+        keyExtractor={item => item.id}
         style={styles.messagesList}
-        contentContainerStyle={styles.messagesContainer}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No messages yet</Text>
-            <Text style={styles.emptySubtext}>Start the conversation!</Text>
-          </View>
-        }
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+        onLayout={() => flatListRef.current?.scrollToEnd()}
       />
 
-      {/* Message Input */}
       <View style={styles.inputContainer}>
         <TextInput
-          style={styles.textInput}
+          style={styles.input}
           value={newMessage}
           onChangeText={setNewMessage}
           placeholder="Type a message..."
-          placeholderTextColor="#888888"
+          placeholderTextColor="#666666"
           multiline
-          maxLength={500}
+          maxLength={1000}
         />
         <TouchableOpacity
-          style={[styles.sendButton, (!newMessage.trim() || sending) && styles.sendButtonDisabled]}
+          style={[styles.sendButton, !newMessage.trim() && styles.sendButtonDisabled]}
           onPress={sendMessage}
           disabled={!newMessage.trim() || sending}
         >
           {sending ? (
-            <ActivityIndicator size="small" color="#ffffff" />
+            <ActivityIndicator color="#FFFFFF" size="small" />
           ) : (
-            <Text style={styles.sendButtonText}>Send</Text>
+            <Ionicons name="send" size={24} color="#FFFFFF" />
           )}
         </TouchableOpacity>
       </View>
@@ -296,150 +297,121 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginTop: 16,
   },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0a0a0a',
-  },
-  errorText: {
-    color: '#ffffff',
-    fontSize: 18,
-    marginBottom: 20,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 16,
-    backgroundColor: '#0a0a0a',
+    padding: 16,
+    paddingTop: Platform.OS === 'ios' ? 60 : 16,
+    backgroundColor: '#1a1a1a',
     borderBottomWidth: 1,
-    borderBottomColor: '#1a1a1a',
+    borderBottomColor: '#333333',
   },
   backButton: {
     marginRight: 16,
   },
-  backButtonText: {
-    color: '#ffffff',
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  headerInfo: {
+  headerContent: {
     flex: 1,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#ffffff',
-    marginBottom: 2,
   },
-  headerSubtitle: {
+  listingTitle: {
     fontSize: 14,
     color: '#888888',
+    marginTop: 4,
   },
   messagesList: {
     flex: 1,
-  },
-  messagesContainer: {
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
-  emptyText: {
-    fontSize: 18,
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: '#888888',
+    padding: 16,
   },
   messageContainer: {
+    flexDirection: 'row',
     marginBottom: 16,
+    maxWidth: '80%',
   },
-  ownMessage: {
-    alignItems: 'flex-end',
+  currentUserMessage: {
+    alignSelf: 'flex-end',
   },
-  otherMessage: {
-    alignItems: 'flex-start',
+  otherUserMessage: {
+    alignSelf: 'flex-start',
+  },
+  avatarContainer: {
+    marginRight: 8,
+    alignSelf: 'flex-end',
+  },
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  avatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#333333',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   messageBubble: {
-    maxWidth: '80%',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 20,
+    padding: 12,
+    borderRadius: 16,
+    maxWidth: '100%',
   },
-  ownBubble: {
-    backgroundColor: '#ffffff',
+  currentUserBubble: {
+    backgroundColor: '#0A84FF',
     borderBottomRightRadius: 4,
   },
-  otherBubble: {
-    backgroundColor: '#1a1a1a',
+  otherUserBubble: {
+    backgroundColor: '#2C2C2E',
     borderBottomLeftRadius: 4,
   },
   messageText: {
+    color: '#ffffff',
     fontSize: 16,
     lineHeight: 22,
-    marginBottom: 4,
-  },
-  ownMessageText: {
-    color: '#000000',
-  },
-  otherMessageText: {
-    color: '#ffffff',
   },
   messageTime: {
+    color: 'rgba(255, 255, 255, 0.6)',
     fontSize: 12,
-  },
-  ownMessageTime: {
-    color: '#666666',
-    textAlign: 'right',
-  },
-  otherMessageTime: {
-    color: '#888888',
+    marginTop: 4,
+    alignSelf: 'flex-end',
   },
   inputContainer: {
     flexDirection: 'row',
+    padding: 16,
     alignItems: 'flex-end',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
     borderTopWidth: 1,
-    borderTopColor: '#1a1a1a',
-    backgroundColor: '#0a0a0a',
-  },
-  textInput: {
-    flex: 1,
+    borderTopColor: '#333333',
     backgroundColor: '#1a1a1a',
-    borderWidth: 1,
-    borderColor: '#333333',
+  },
+  input: {
+    flex: 1,
+    backgroundColor: '#2C2C2E',
     borderRadius: 20,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
     color: '#ffffff',
+    fontSize: 16,
     maxHeight: 100,
-    marginRight: 12,
+    marginRight: 8,
   },
   sendButton: {
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 20,
-    minWidth: 60,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#0A84FF',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   sendButtonDisabled: {
     backgroundColor: '#333333',
-  },
-  sendButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '600',
   },
 });

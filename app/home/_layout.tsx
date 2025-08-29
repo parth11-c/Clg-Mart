@@ -41,11 +41,29 @@ export default function HomeLayout() {
           }}
         />
         <Tabs.Screen
+          name="browse"
+          options={{
+            title: 'Browse',
+            tabBarIcon: ({ color }) => (
+              <Text style={{ fontSize: responsiveValue(18, 20), color }}>🔍</Text>
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="create-listing"
           options={{
             title: 'Create',
             tabBarIcon: ({ color }) => (
               <Text style={{ fontSize: responsiveValue(18, 20), color }}>➕</Text>
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="messages"
+          options={{
+            title: 'Message',
+            tabBarIcon: ({ color }) => (
+              <Text style={{ fontSize: responsiveValue(18, 20), color }}>💬</Text>
             ),
           }}
         />
@@ -58,13 +76,8 @@ export default function HomeLayout() {
             ),
           }}
         />
+        
         {/* Hide all other screens from tab bar */}
-        <Tabs.Screen
-          name="browse"
-          options={{
-            href: null,
-          }}
-        />
         <Tabs.Screen
           name="edit-profile"
           options={{
@@ -73,24 +86,6 @@ export default function HomeLayout() {
         />
         <Tabs.Screen
           name="listing"
-          options={{
-            href: null,
-          }}
-        />
-        <Tabs.Screen
-          name="listing/[id]"
-          options={{
-            href: null,
-          }}
-        />
-        <Tabs.Screen
-          name="messages"
-          options={{
-            href: null,
-          }}
-        />
-        <Tabs.Screen
-          name="messages/[id]"
           options={{
             href: null,
           }}

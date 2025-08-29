@@ -93,26 +93,38 @@ export default function ListingCard({ listing }: ListingCardProps) {
     }
   };
 
+  // Get image URL with more detailed logging
   const mainImage = listing.listing_images?.[0]?.file_path;
-  console.log('ListingCard image data:', listing.listing_images, 'Main image:', mainImage);
+  console.log('Listing Images:', listing.listing_images);
+  console.log('Main Image URL:', mainImage);
   
-  // Check if the image is base64 or a URL
-  const isBase64 = mainImage?.startsWith('data:image');
+  // Fallback image
+  const defaultImage = 'https://via.placeholder.com/300x300.png?text=No+Image';
+  
+  // Get the appropriate image URL, ensure it's a valid URL
+  const imageUrl = (mainImage && (mainImage.startsWith('http://') || mainImage.startsWith('https://')))
+    ? mainImage
+    : defaultImage;
+  console.log('ListingCard Debug - First image object:', listing.listing_images?.[0]);
+  console.log('ListingCard Debug - Main image path:', mainImage);
+  
+  // Check if the image is valid (not null, undefined, or empty string)
+  const isValidImage = mainImage && 
+    mainImage.trim() !== '' && 
+    (mainImage.startsWith('data:image') || 
+     mainImage.startsWith('http') || 
+     mainImage.startsWith('https') ||
+     mainImage.startsWith('blob:'));
 
   return (
     <TouchableOpacity style={styles.card} onPress={handlePress}>
       <View style={styles.imageContainer}>
-        {mainImage ? (
-          <Image 
-            source={{ uri: mainImage }} 
-            style={styles.image}
-            resizeMode="cover"
-          />
-        ) : (
-          <View style={styles.placeholderImage}>
-            <Text style={styles.placeholderText}>📷</Text>
-          </View>
-        )}
+        <Image 
+          source={{ uri: imageUrl }} 
+          style={styles.image}
+          resizeMode="cover"
+          onError={() => console.warn('Image failed to load:', imageUrl)}
+        />
         <View style={styles.priceTag}>
           <Text style={styles.priceText}>{formatPrice(listing.price)}</Text>
         </View>

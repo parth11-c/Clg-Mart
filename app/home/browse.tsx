@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '../../lib/supabase';
+import { databaseSetup } from '../../lib/databaseSetup';
+import { fixListingImages, fixCategoriesTable } from '../../lib/databaseFixes';
 import ListingCard from '../../components/ListingCard';
 
 interface Listing {
@@ -52,25 +54,38 @@ export default function BrowseTab() {
 
   const fetchCategories = async () => {
     try {
+      // Try to get categories, with fallback for schema issues
+      const fallbackCategories = await fixCategoriesTable();
+      
       const { data, error } = await supabase
         .from('categories')
         .select('*')
         .order('name');
       
       if (error) {
-        console.error('Error fetching categories:', error);
+        console.log('Using fallback categories due to error:', error.message);
+        setCategories(fallbackCategories);
       } else {
-        setCategories(data || []);
+        setCategories(data || fallbackCategories);
       }
     } catch (error) {
       console.error('Error fetching categories:', error);
+      // Use fallback categories
+      setCategories([
+        { id: 1, name: 'Electronics' },
+        { id: 2, name: 'Books' },
+        { id: 3, name: 'Clothing' },
+        { id: 4, name: 'Furniture' },
+        { id: 5, name: 'Sports' },
+        { id: 6, name: 'Other' }
+      ]);
     }
   };
 
   const fetchListings = async () => {
     try {
       let query = supabase
-        .from('listings_feed')
+        .from('listings')
         .select('*')
         .order('created_at', { ascending: false });
 
@@ -82,8 +97,110 @@ export default function BrowseTab() {
 
       if (error) {
         console.error('Error fetching listings:', error);
+        // Fallback to listings_feed
+        let fallbackQuery = supabase
+          .from('listings_feed')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (selectedCategory) {
+          fallbackQuery = fallbackQuery.eq('category_id', selectedCategory);
+        }
+
+        const { data: fallbackData, error: fallbackError } = await fallbackQuery;
+        
+        if (fallbackError) {
+          console.error('Fallback query also failed:', fallbackError);
+        } else {
+          setListings(fallbackData || []);
+        }
       } else {
-        setListings(data || []);
+        // Fetch additional data for each listing
+        const listingsWithImages = await Promise.all(
+          (data || []).map(async (listing) => {
+            try {
+              // Fetch images with better debugging
+              const { data: images, error: imgError } = await supabase
+                .from('listing_images')
+                .select('file_path')
+                .eq('listing_id', listing.id);
+
+              if (imgError) {
+                console.log('Image fetch error for listing', listing.id, ':', imgError);
+              }
+
+              console.log('Raw images data for listing', listing.id, ':', images);
+
+              // Filter out images with null/undefined file_path
+              const validImages = images?.filter(img => img.file_path && img.file_path.trim() !== '') || [];
+
+              // Fetch seller info
+              const { data: seller } = await supabase
+                .from('profiles')
+                .select('username, avatar_url')
+                .eq('id', listing.seller_id)
+                .single();
+
+              // Fetch category info
+              const { data: category } = await supabase
+                .from('categories')
+                .select('name')
+                .eq('id', listing.category_id)
+                .single();
+
+              const processedListing = {
+                ...listing,
+                listing_images: validImages.map(img => ({ file_path: img.file_path })),
+                seller: seller || { username: 'Unknown User' },
+                category: category || { name: 'Unknown Category' }
+              };
+
+              console.log('Processed listing:', processedListing.id, 'with', validImages.length, 'valid images');
+              
+              return processedListing;
+            } catch (additionalError) {
+              console.log('Error fetching additional data for listing:', listing.id, additionalError);
+              return {
+                ...listing,
+                listing_images: [],
+                seller: { username: 'Unknown User' },
+                category: { name: 'Unknown Category' }
+              };
+            }
+          })
+        );
+        
+        setListings(listingsWithImages);
+        
+        // If no listings exist, create sample data
+        if (listingsWithImages.length === 0) {
+          console.log('No listings found, creating sample data...');
+          const sampleCreated = await databaseSetup.createSampleData();
+          if (sampleCreated) {
+            // Refetch listings after creating sample data
+            setTimeout(() => {
+              fetchListings();
+            }, 1000);
+          }
+        } else {
+          // Check if any listings have invalid images and fix them
+          const hasInvalidImages = listingsWithImages.some(listing => 
+            !listing.listing_images || 
+            listing.listing_images.length === 0 || 
+            listing.listing_images.some((img: { file_path: string }) => !img.file_path || img.file_path === 'undefined')
+          );
+
+          if (hasInvalidImages) {
+            console.log('Some listings have invalid images, fixing...');
+            const fixed = await fixListingImages();
+            if (fixed) {
+              // Refetch listings after fixing images
+              setTimeout(() => {
+                fetchListings();
+              }, 2000);
+            }
+          }
+        }
       }
     } catch (error) {
       console.error('Error fetching listings:', error);
@@ -181,6 +298,51 @@ export default function BrowseTab() {
       </Text>
     </View>
   );
+
+  // Debug function to check database state
+  const debugDatabase = async () => {
+    console.log('=== DATABASE DEBUG ===');
+    
+    // Check listings table
+    const { data: allListings, error: listingsError } = await supabase
+      .from('listings')
+      .select('id, title, seller_id, category_id')
+      .limit(5);
+    
+    console.log('Sample listings:', allListings);
+    console.log('Listings error:', listingsError);
+    
+    // Check listing_images table
+    const { data: allImages, error: imagesError } = await supabase
+      .from('listing_images')
+      .select('*')
+      .limit(10);
+    
+    console.log('Sample images:', allImages);
+    console.log('Images error:', imagesError);
+    
+    // Check categories table
+    const { data: allCategories, error: categoriesError } = await supabase
+      .from('categories')
+      .select('*');
+    
+    console.log('Categories:', allCategories);
+    console.log('Categories error:', categoriesError);
+    
+    // Check profiles table
+    const { data: allProfiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .limit(5);
+    
+    console.log('Sample profiles:', allProfiles);
+    console.log('Profiles error:', profilesError);
+  };
+
+  // Call debug function on component mount
+  useEffect(() => {
+    debugDatabase();
+  }, []);
 
   if (loading) {
     return (

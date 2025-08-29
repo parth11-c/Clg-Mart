@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { supabase } from '../lib/supabase';
+import { databaseSetup } from '../lib/databaseSetup';
 import { 
   fontSizes, 
   inputDimensions, 
@@ -11,7 +12,8 @@ import {
 
 interface Category {
   id: number;
-  name: string;
+  label: string;
+  slug?: string;
 }
 
 interface CategoryPickerProps {
@@ -21,16 +23,16 @@ interface CategoryPickerProps {
 
 // Fallback categories if database is empty
 const FALLBACK_CATEGORIES: Category[] = [
-  { id: 1, name: 'Electronics' },
-  { id: 2, name: 'Books' },
-  { id: 3, name: 'Clothing' },
-  { id: 4, name: 'Furniture' },
-  { id: 5, name: 'Sports & Fitness' },
-  { id: 6, name: 'Musical Instruments' },
-  { id: 7, name: 'Art & Crafts' },
-  { id: 8, name: 'Home & Garden' },
-  { id: 9, name: 'Automotive' },
-  { id: 10, name: 'Other' },
+  { id: 1, label: 'Electronics', slug: 'electronics' },
+  { id: 2, label: 'Books', slug: 'books' },
+  { id: 3, label: 'Clothing', slug: 'clothing' },
+  { id: 4, label: 'Furniture', slug: 'furniture' },
+  { id: 5, label: 'Sports & Fitness', slug: 'sports' },
+  { id: 6, label: 'Musical Instruments', slug: 'instruments' },
+  { id: 7, label: 'Art & Crafts', slug: 'art' },
+  { id: 8, label: 'Home & Garden', slug: 'home' },
+  { id: 9, label: 'Automotive', slug: 'automotive' },
+  { id: 10, label: 'Other', slug: 'other' },
 ];
 
 export default function CategoryPicker({ onSelect, selectedValue }: CategoryPickerProps) {
@@ -46,7 +48,7 @@ export default function CategoryPicker({ onSelect, selectedValue }: CategoryPick
       const { data, error } = await supabase
         .from('categories')
         .select('*')
-        .order('name');
+        .order('label');
 
       if (error) {
         console.log('Error fetching categories:', error);
@@ -58,7 +60,7 @@ export default function CategoryPicker({ onSelect, selectedValue }: CategoryPick
       } else {
         console.log('Categories table is empty, using fallback categories');
         // If table exists but is empty, populate it with fallback categories
-        await populateCategories();
+        await databaseSetup.initializeCategories();
         setCategories(FALLBACK_CATEGORIES);
       }
     } catch (error) {
@@ -110,7 +112,7 @@ export default function CategoryPicker({ onSelect, selectedValue }: CategoryPick
           {categories.map((category) => (
             <Picker.Item
               key={category.id}
-              label={category.name}
+              label={category.label}
               value={category.id}
               color="#ffffff"
             />
